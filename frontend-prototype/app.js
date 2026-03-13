@@ -1127,7 +1127,7 @@
       }
       if (userMenuWho) userMenuWho.textContent = "--";
       if (userMenuPanel) userMenuPanel.classList.add("hidden");
-      hideLoginGate();
+      showLoginGate();
       return;
     }
     if (userMenuBtn) userMenuBtn.textContent = `${currentUser.username}`;
