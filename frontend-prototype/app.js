@@ -2212,10 +2212,20 @@
 
   function startBackgroundAnimation() {
     const canvas = document.getElementById("bgCanvas");
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const particles = Array.from({ length: 24 }).map((_, i) => ({
+    const prefersReducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    const targetFrameMs = prefersReducedMotion ? 1000 / 20 : 1000 / 30;
+    const estimatedArea = window.innerWidth * window.innerHeight;
+    const particleCount = prefersReducedMotion
+      ? 10
+      : Math.max(12, Math.min(22, Math.round(estimatedArea / 180000)));
+    const linkDistance = prefersReducedMotion ? 130 : 160;
+
+    const particles = Array.from({ length: particleCount }).map((_, i) => ({
       x: Math.random(),
       y: Math.random(),
       r: 2 + Math.random() * 3,
@@ -2224,13 +2234,23 @@
       hue: i % 2 === 0 ? 200 : 165
     }));
 
+    let rafId = 0;
+    let lastTs = 0;
+
     function resize() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      const cssW = Math.max(1, window.innerWidth);
+      const cssH = Math.max(1, window.innerHeight);
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      canvas.style.width = `${cssW}px`;
+      canvas.style.height = `${cssH}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
 
-    function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    function renderFrame() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      ctx.clearRect(0, 0, width, height);
 
       particles.forEach((p) => {
         p.x += p.vx;
@@ -2238,8 +2258,8 @@
         if (p.x < 0 || p.x > 1) p.vx *= -1;
         if (p.y < 0 || p.y > 1) p.vy *= -1;
 
-        const px = p.x * canvas.width;
-        const py = p.y * canvas.height;
+        const px = p.x * width;
+        const py = p.y * height;
         const grad = ctx.createRadialGradient(px, py, 0, px, py, p.r * 12);
         grad.addColorStop(0, `hsla(${p.hue}, 92%, 78%, 0.45)`);
         grad.addColorStop(1, "hsla(0, 0%, 100%, 0)");
@@ -2254,26 +2274,54 @@
         for (let j = i + 1; j < particles.length; j += 1) {
           const a = particles[i];
           const b = particles[j];
-          const dx = (a.x - b.x) * canvas.width;
-          const dy = (a.y - b.y) * canvas.height;
+          const dx = (a.x - b.x) * width;
+          const dy = (a.y - b.y) * height;
           const d = Math.hypot(dx, dy);
-          if (d < 180) {
-            ctx.strokeStyle = `rgba(130, 195, 255, ${0.13 * (1 - d / 180)})`;
+          if (d < linkDistance) {
+            ctx.strokeStyle = `rgba(130, 195, 255, ${0.13 * (1 - d / linkDistance)})`;
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(a.x * canvas.width, a.y * canvas.height);
-            ctx.lineTo(b.x * canvas.width, b.y * canvas.height);
+            ctx.moveTo(a.x * width, a.y * height);
+            ctx.lineTo(b.x * width, b.y * height);
             ctx.stroke();
           }
         }
       }
+    }
 
-      requestAnimationFrame(draw);
+    function tick(ts) {
+      if (document.hidden) return;
+      if (!lastTs || ts - lastTs >= targetFrameMs) {
+        lastTs = ts;
+        renderFrame();
+      }
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function startLoop() {
+      if (rafId) return;
+      lastTs = 0;
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function stopLoop() {
+      if (!rafId) return;
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        stopLoop();
+      } else {
+        startLoop();
+      }
     }
 
     window.addEventListener("resize", resize);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     resize();
-    draw();
+    startLoop();
   }
 
   function init() {
