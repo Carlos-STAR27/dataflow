@@ -1335,6 +1335,45 @@ def check_duplicates_by_mapped_columns(
     )
 
 
+def collapse_duplicate_rows_by_keys(
+    mapped_df: pd.DataFrame,
+    table_name: str,
+    key_fields: List[str],
+) -> tuple[pd.DataFrame, int]:
+    """Collapse duplicate key rows in source data, keeping the last row for each key."""
+    if not key_fields:
+        return mapped_df, 0
+
+    key_df = pd.DataFrame(index=mapped_df.index)
+
+    for db_field in key_fields:
+        if db_field in mapped_df.columns:
+            series = mapped_df[db_field].astype(str).str.strip()
+        else:
+            series = pd.Series(["" for _ in range(len(mapped_df))], index=mapped_df.index)
+
+        if table_name == "bw_object_name" and db_field == "SOURCESYS":
+            series = series.where(series.str.len() >= 3, "")
+
+        key_df[db_field] = series.map(normalize_cell)
+
+    valid_keys = key_df.dropna(subset=key_fields)
+    if valid_keys.empty:
+        return mapped_df, 0
+
+    keep_valid = ~valid_keys.duplicated(subset=key_fields, keep="last")
+    keep_indices = set(valid_keys.index[keep_valid])
+
+    keep_mask = pd.Series(True, index=mapped_df.index)
+    keep_mask.loc[valid_keys.index] = valid_keys.index.isin(keep_indices)
+
+    dropped_count = int((~keep_mask).sum())
+    if dropped_count <= 0:
+        return mapped_df, 0
+
+    return mapped_df.loc[keep_mask].reset_index(drop=True), dropped_count
+
+
 def check_missing_primary_keys(mapped_df: pd.DataFrame, table_name: str, key_fields: List[str]) -> None:
     """Fail early when primary-key fields become empty after preprocessing/normalization."""
     if not key_fields:
@@ -2018,8 +2057,13 @@ def execute_import(
     table_name: str = Form(...),
     mapping_json: str = Form(...),
     sheet_name: str = Form(""),
+    duplicate_mode: str = Form("fail"),
     file: UploadFile = File(...),
 ) -> Dict[str, str | int]:
+        duplicate_mode = str(duplicate_mode or "fail").strip().lower()
+        if duplicate_mode not in {"fail", "continue"}:
+            raise HTTPException(status_code=400, detail="duplicate_mode must be fail or continue")
+
     table_name = table_name.strip()
     if table_name not in ALLOWED_TABLES:
         raise HTTPException(status_code=400, detail="Unsupported table_name")
@@ -2064,7 +2108,11 @@ def execute_import(
         mapped_df = apply_bw_object_name_logic(mapped_df)
 
     key_fields = get_duplicate_check_fields(table_name)
-    check_duplicates_by_mapped_columns(source_df, mapped_df, mapping, table_name, key_fields)
+    collapsed_duplicate_rows = 0
+    if table_name == "bw_object_name" and duplicate_mode == "continue":
+        mapped_df, collapsed_duplicate_rows = collapse_duplicate_rows_by_keys(mapped_df, table_name, key_fields)
+    else:
+        check_duplicates_by_mapped_columns(source_df, mapped_df, mapping, table_name, key_fields)
 
     # Normalize empty-like values to SQL NULL and trim text safely.
     mapped_df = mapped_df.apply(lambda col: col.map(normalize_cell))
@@ -2177,6 +2225,7 @@ def execute_import(
         "affected_rows": int(affected),
         "inserted_rows": int(inserted_count),
         "updated_rows": int(updated_count),
+        "collapsed_duplicate_rows": int(collapsed_duplicate_rows),
         "excel_count": int(excel_count),
         "db_count": int(db_count),
         "last_update": status["last_update"],

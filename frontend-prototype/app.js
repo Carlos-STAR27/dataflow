@@ -1778,11 +1778,12 @@
     return resp.json();
   }
 
-  async function executeImport({ tableName, mapping, sheetName, file }) {
+  async function executeImport({ tableName, mapping, sheetName, file, duplicateMode = "fail" }) {
     const formData = new FormData();
     formData.append("table_name", tableName);
     formData.append("mapping_json", JSON.stringify(mapping));
     formData.append("sheet_name", sheetName || "");
+    formData.append("duplicate_mode", duplicateMode);
     formData.append("file", file);
 
     const resp = await apiFetch(`${importStatusApiBase}/import/execute`, {
@@ -2171,7 +2172,8 @@
           tableName: activeImportTable,
           mapping,
           sheetName,
-          file: selectedFile
+          file: selectedFile,
+          duplicateMode: "fail"
         });
         await refreshImportCardTimes();
         const importedCount = Number(result.db_count ?? result.affected_rows ?? 0);
@@ -2180,6 +2182,40 @@
         completeImportBusyState();
       } catch (err) {
         const rawMsg = String(err?.message || "").trim();
+        if (activeImportTable === "bw_object_name" && /重复组合键/.test(rawMsg)) {
+          const shouldContinue = window.confirm("检测到重复组合键。点击“确定”将继续导入并自动保留每组重复键的最后一条记录；点击“取消”将终止本次导入。");
+          if (!shouldContinue) {
+            showToast("已取消导入。", "error");
+            setImportBusyState(false);
+            return;
+          }
+
+          try {
+            if (importProgressText) {
+              importProgressText.textContent = "检测到重复数据，正在自动去重后继续导入...";
+            }
+            const sheetName = importSheetSelect && !importSheetSelect.disabled ? importSheetSelect.value : "";
+            const retryResult = await executeImport({
+              tableName: activeImportTable,
+              mapping,
+              sheetName,
+              file: selectedFile,
+              duplicateMode: "continue"
+            });
+            await refreshImportCardTimes();
+            const importedCount = Number(retryResult.db_count ?? retryResult.affected_rows ?? 0);
+            const dropped = Number(retryResult.collapsed_duplicate_rows || 0);
+            const suffix = dropped > 0 ? `（已去重 ${dropped} 行）` : "";
+            showToast(`导入完成: ${retryResult.table_name}，当前数据条目 ${importedCount}，更新时间 ${retryResult.last_update}${suffix}`);
+            completeImportBusyState();
+            return;
+          } catch (retryErr) {
+            const retryMsg = String(retryErr?.message || "").trim();
+            showToast(`导入失败，请确认后端服务已启动（${importStatusApiBase}）。${retryMsg ? ` 详情: ${retryMsg}` : ""}`, "error");
+            setImportBusyState(false);
+            return;
+          }
+        }
         if (/no rows to import/i.test(rawMsg)) {
           showToast("导入失败：文件未读取到可导入数据行。请确认有表头并至少包含1行数据，再重试。", "error");
         } else if (/未读取到可导入数据行/.test(rawMsg)) {
