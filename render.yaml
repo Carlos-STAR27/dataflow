@@ -19,7 +19,7 @@ services:
       - key: DB_NAME
         value: dataflow_digram
       - key: DB_SSL_CA
-        value: /etc/ssl/cert.pem
+        value: /etc/ssl/certs/ca-certificates.crt
       - key: DB_SSL_DISABLED
         value: "false"
       - key: DB_SSL_VERIFY_CERT
