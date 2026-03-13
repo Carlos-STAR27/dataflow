@@ -112,9 +112,15 @@
   function resolveApiBase() {
     const fromRuntime = String(window.__DATAFLOW_API_BASE__ || "").trim();
     const fromQuery = String(new URLSearchParams(window.location.search).get("apiBase") || "").trim();
-    const fromStorage = String(window.localStorage.getItem("df-api-base") || "").trim();
     const pageDefault = `${window.location.protocol}//${window.location.hostname || "localhost"}:8000`;
-    const host = fromRuntime || fromQuery || fromStorage || pageDefault;
+    if (!fromRuntime && !fromQuery) {
+      try {
+        window.localStorage.removeItem("df-api-base");
+      } catch {
+        // Ignore storage failures in restrictive browser contexts.
+      }
+    }
+    const host = fromRuntime || fromQuery || pageDefault;
     return `${normalizeLoopbackApiHost(host)}/api`;
   }
 
@@ -144,14 +150,36 @@
   let selectedAdminResetUsername = "";
 
   async function apiFetch(url, options = {}, skipAuthGuard = false) {
-    const response = await fetch(url, {
-      credentials: "include",
-      ...options
-    });
-    if (response.status === 401 && !skipAuthGuard) {
-      showLoginGate();
+    const opts = options || {};
+    const hasExternalSignal = Boolean(opts.signal);
+    const timeoutMs = Number.isFinite(Number(opts.timeoutMs)) ? Number(opts.timeoutMs) : 20000;
+    const controller = hasExternalSignal ? null : new AbortController();
+    const timeoutId = hasExternalSignal
+      ? null
+      : window.setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        credentials: "include",
+        ...opts,
+        signal: hasExternalSignal ? opts.signal : controller.signal
+      });
+      if (response.status === 401 && !skipAuthGuard) {
+        showLoginGate();
+      }
+      return response;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error("request_timeout");
+      }
+      throw error;
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
     }
-    return response;
   }
 
   function parseErrorText(text, fallback) {
@@ -824,7 +852,11 @@
         return `<tr data-id="${esc(row.id)}" data-source="${esc(row.source || "")}" data-type="${esc(row.type || "")}" data-index="${index}"><td>${markKeyword(row.type || "-", key)}</td><td>${markKeyword(row.id || "-", key)}</td><td>${markKeyword(row.source || "-", key)}</td><td>${markKeyword(row.desc || "-", key)}</td></tr>`;
       })
       .join("");
-    } catch {
+    } catch (error) {
+      if (String(error?.message || "") === "request_timeout") {
+        moreTableBody.innerHTML = '<tr><td colspan="4">请求超时，请稍后重试或检查后端状态</td></tr>';
+        return;
+      }
       moreTableBody.innerHTML = '<tr><td colspan="4">加载失败，请确认后端服务已启动</td></tr>';
     }
   }
@@ -1089,7 +1121,13 @@
 
   function refreshUserMenu() {
     if (!currentUser) {
-      showLoginGate();
+      if (userMenuBtn) {
+        userMenuBtn.textContent = "登录";
+        userMenuBtn.classList.remove("hidden");
+      }
+      if (userMenuWho) userMenuWho.textContent = "--";
+      if (userMenuPanel) userMenuPanel.classList.add("hidden");
+      hideLoginGate();
       return;
     }
     if (userMenuBtn) userMenuBtn.textContent = `${currentUser.username}`;
@@ -1256,11 +1294,16 @@
         if (loginUsername) loginUsername.value = "";
         if (loginPassword) loginPassword.value = "";
         setLoginError("");
+        hideLoginGate();
       });
     }
 
     if (userMenuBtn) {
       userMenuBtn.addEventListener("click", () => {
+        if (!currentUser) {
+          showLoginGate();
+          return;
+        }
         if (userMenuPanel) userMenuPanel.classList.toggle("hidden");
       });
     }
@@ -1587,7 +1630,7 @@
       if (epoch !== authStateEpoch) return;
       if (currentUser) return;
       currentUser = null;
-      showLoginGate();
+      refreshUserMenu();
     }
   }
 
@@ -2080,6 +2123,7 @@
     loadRecentSearches();
     setupSearchBehavior();
     setupAuthUi();
+    refreshUserMenu();
     setupControls();
     restoreHomeState();
     setupMorePage();

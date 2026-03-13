@@ -111,9 +111,15 @@
   function resolveApiBase() {
     const fromRuntime = String(window.__DATAFLOW_API_BASE__ || "").trim();
     const fromQuery = String(new URLSearchParams(window.location.search).get("apiBase") || "").trim();
-    const fromStorage = String(window.localStorage.getItem("df-api-base") || "").trim();
     const pageDefault = `${window.location.protocol}//${window.location.hostname || "localhost"}:8000`;
-    const host = fromRuntime || fromQuery || fromStorage || pageDefault;
+    if (!fromRuntime && !fromQuery) {
+      try {
+        window.localStorage.removeItem("df-api-base");
+      } catch {
+        // Ignore storage failures in restrictive browser contexts.
+      }
+    }
+    const host = fromRuntime || fromQuery || pageDefault;
     return `${normalizeLoopbackApiHost(host)}/api`;
   }
 
