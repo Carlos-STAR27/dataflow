@@ -194,13 +194,6 @@ body:not(.flow-only) .layout.centered {
   padding: 0 8px;
 }
 
-.import-tool-detected {
-  color: #77f3a9;
-  font-size: 16px;
-  line-height: 1;
-  font-weight: 700;
-}
-
 .create-user-tools label {
   font-size: 13px;
   color: var(--text-soft);

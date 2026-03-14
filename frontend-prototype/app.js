@@ -87,7 +87,6 @@
   const importSheetSelect = document.getElementById("importSheetSelect");
   const importHeaderRowWrap = document.getElementById("importHeaderRowWrap");
   const importHeaderRowSelect = document.getElementById("importHeaderRowSelect");
-  const importHeaderRowDetectedMark = document.getElementById("importHeaderRowDetectedMark");
   const importMeta = document.getElementById("importMeta");
   const importProgressWrap = document.getElementById("importProgressWrap");
   const importProgressText = document.getElementById("importProgressText");
@@ -166,7 +165,6 @@
   let importTaskLock = false;
   let lastToastMessage = "";
   let activeHeaderRowNumber = 1;
-  let activeDetectedHeaderRow = 1;
 
   async function apiFetch(url, options = {}, skipAuthGuard = false) {
     const opts = options || {};
@@ -2010,13 +2008,6 @@
     return Math.min(parsed, 10);
   }
 
-  function updateHeaderRowDetectedIndicator() {
-    if (!importHeaderRowDetectedMark) return;
-    const isDetected = getHeaderRowNumber() === activeDetectedHeaderRow;
-    importHeaderRowDetectedMark.classList.toggle("hidden", !isDetected);
-    importHeaderRowDetectedMark.setAttribute("title", `自动识别标题行为第${activeDetectedHeaderRow}行`);
-  }
-
   function extractHeadersAndRowCount(rows, headerRowNumber = 1) {
     const list = Array.isArray(rows) ? rows : [];
     const headerIndex = Math.max(0, Math.min(list.length - 1, headerRowNumber - 1));
@@ -2094,15 +2085,13 @@
     return { ...parsed, detectedHeaderRow };
   }
 
-  function renderMappingByHeaders(headers, rowCount = 0, detectedHeaderRow = 1) {
+  function renderMappingByHeaders(headers, rowCount = 0) {
     const dbFields = getVisibleDbFields(activeImportTable);
     const suggested = suggestMapping(dbFields, headers);
 
     activeExcelHeaders = headers;
     activeImportDataRowCount = Math.max(0, Number(rowCount) || 0);
     activeHeaderRowNumber = getHeaderRowNumber();
-    activeDetectedHeaderRow = Math.max(1, Number(detectedHeaderRow) || 1);
-    updateHeaderRowDetectedIndicator();
     if (!headers.length) {
       importMeta.innerHTML = "";
       importMapBody.innerHTML = "";
@@ -2118,7 +2107,6 @@
     activeExcelHeaders = [];
     activeImportDataRowCount = 0;
     activeHeaderRowNumber = 1;
-    activeDetectedHeaderRow = 1;
     importTaskLock = false;
     resetImportProgress();
     importModalTitle.textContent = `字段映射 - ${tableName}`;
@@ -2128,7 +2116,6 @@
       importHeaderRowSelect.value = "1";
       importHeaderRowSelect.disabled = false;
     }
-    updateHeaderRowDetectedIndicator();
     if (importSheetSelect) {
       importSheetSelect.innerHTML = '<option value="">Sheet页</option>';
       importSheetSelect.disabled = true;
@@ -2194,10 +2181,12 @@
           importSheetSelect.disabled = true;
         }
         const parsed = await parseExcelHeaders(file, getHeaderRowNumber());
+        const nextHeaderRow = String(parsed.detectedHeaderRow || 1);
         if (importHeaderRowSelect) {
-          importHeaderRowSelect.value = String(parsed.detectedHeaderRow);
+          importHeaderRowSelect.value = nextHeaderRow;
         }
-        renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
+        const refreshed = await parseExcelHeaders(file, Number(nextHeaderRow));
+        renderMappingByHeaders(refreshed.headers, refreshed.rowCount);
         return;
       }
 
@@ -2220,10 +2209,12 @@
 
       const firstSheet = sheets[0] || "";
       const parsed = getHeadersFromSheet(workbook, firstSheet, getHeaderRowNumber());
+      const nextHeaderRow = String(parsed.detectedHeaderRow || 1);
       if (importHeaderRowSelect) {
-        importHeaderRowSelect.value = String(parsed.detectedHeaderRow);
+        importHeaderRowSelect.value = nextHeaderRow;
       }
-      renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
+      const refreshed = getHeadersFromSheet(workbook, firstSheet, Number(nextHeaderRow));
+      renderMappingByHeaders(refreshed.headers, refreshed.rowCount);
     });
 
     if (importSheetSelect) {
@@ -2231,10 +2222,12 @@
         if (!activeImportWorkbook) return;
         const sheetName = importSheetSelect.value;
         const parsed = getHeadersFromSheet(activeImportWorkbook, sheetName, getHeaderRowNumber());
+        const nextHeaderRow = String(parsed.detectedHeaderRow || 1);
         if (importHeaderRowSelect) {
-          importHeaderRowSelect.value = String(parsed.detectedHeaderRow);
+          importHeaderRowSelect.value = nextHeaderRow;
         }
-        renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
+        const refreshed = getHeadersFromSheet(activeImportWorkbook, sheetName, Number(nextHeaderRow));
+        renderMappingByHeaders(refreshed.headers, refreshed.rowCount);
       });
     }
 
@@ -2247,14 +2240,14 @@
         const fileNameLower = file.name.toLowerCase();
         if (fileNameLower.endsWith(".csv")) {
           const parsed = await parseExcelHeaders(file, getHeaderRowNumber());
-          renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
+          renderMappingByHeaders(parsed.headers, parsed.rowCount);
           return;
         }
 
         if (!activeImportWorkbook || !importSheetSelect) return;
         const sheetName = importSheetSelect.value;
         const parsed = getHeadersFromSheet(activeImportWorkbook, sheetName, getHeaderRowNumber());
-        renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
+        renderMappingByHeaders(parsed.headers, parsed.rowCount);
       });
     }
 
