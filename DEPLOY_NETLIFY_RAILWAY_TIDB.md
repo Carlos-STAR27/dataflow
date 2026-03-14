@@ -1,6 +1,8 @@
-# Dataflow Digram 同 realstock 技术栈部署说明
+# Dataflow Digram 部署说明（Netlify + Railway + TiDB）
 
-目标：与 realstock 保持同一技术栈
+如果你要直接开始操作，请先看：`DEPLOY_NETLIFY_RAILWAY_TIDB_START_NOW.md`。
+
+目标技术栈：
 - 前端：Netlify
 - 后端：Railway（Docker）
 - 数据库：TiDB Cloud（MySQL 兼容）
@@ -9,7 +11,7 @@
 
 ## 1. 对齐检查结论（已完成）
 
-和 realstock 对比后，当前项目满足同栈部署前提：
+当前项目满足此技术栈部署前提：
 - 前端是纯静态资源目录：`frontend-prototype`
 - 后端是 FastAPI + Docker，可直接交给 Railway 运行
 - 已支持 TiDB TLS 参数（`DB_SSL_*`）
@@ -123,15 +125,11 @@ window.__DATAFLOW_API_BASE__ = "https://你的-railway-域名";
 4) 导入功能异常
 - 检查 Railway 日志是否出现 `create_rstran_table` 或 `create_bw_object_name_table` 报错
 
-## 7. 与 realstock 一致性映射
+## 7. 技术栈映射
 
-realstock：
-- 前端 Netlify（`netlify.toml` + 子目录发布）
-- 后端 Railway（Docker）
-
-Dataflow Digram（本次对齐后）：
+Dataflow Digram（当前方案）：
 - 前端 Netlify（根目录 `netlify.toml`，发布 `frontend-prototype`）
 - 后端 Railway（根目录 `Dockerfile`）
 - 数据库 TiDB（沿用现有 `DB_SSL_*` 变量）
 
-到此，两个项目已使用同一部署技术栈和相同的发布分层方式。
+到此，项目已完成按 Netlify + Railway + TiDB 的分层部署配置。
