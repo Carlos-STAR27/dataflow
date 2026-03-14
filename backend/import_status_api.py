@@ -2283,7 +2283,17 @@ def execute_import(
 
     check_missing_primary_keys(mapped_df, table_name, key_fields)
 
-    rows = [tuple(normalize_cell(row[col]) for col in db_columns) for _, row in mapped_df.iterrows()]
+    rows = []
+    for _, row in mapped_df.iterrows():
+        values = []
+        for col in db_columns:
+            cell = row[col]
+            if table_name == "bw_object_name" and col == "SOURCESYS":
+                if cell is None or (isinstance(cell, str) and not cell.strip()):
+                    values.append("")
+                    continue
+            values.append(normalize_cell(cell))
+        rows.append(tuple(values))
     if not rows:
         raise HTTPException(status_code=400, detail="No rows to import")
 
