@@ -2136,7 +2136,7 @@ def sync_bw_object_name_from_rstran(cur) -> Dict[str, int]:
     pass1_subquery = f"""
         SELECT DISTINCT
             NULLIF(TRIM(`{source_col}`), '') AS BW_OBJECT,
-            NULLIF(TRIM(`SOURCESYS`), '') AS SOURCESYS,
+            COALESCE(NULLIF(TRIM(`SOURCESYS`), ''), '') AS SOURCESYS,
             NULLIF(TRIM(`SOURCETYPE`), '') AS BW_OBJECT_TYPE
         FROM `rstran`
         WHERE `{source_col}` IS NOT NULL AND TRIM(`{source_col}`) <> ''
@@ -2146,7 +2146,7 @@ def sync_bw_object_name_from_rstran(cur) -> Dict[str, int]:
     pass2_subquery = """
         SELECT DISTINCT
             NULLIF(TRIM(`TARGETNAME`), '') AS BW_OBJECT,
-            NULL AS SOURCESYS,
+            '' AS SOURCESYS,
             NULLIF(TRIM(`TARGETTYPE`), '') AS BW_OBJECT_TYPE
         FROM `rstran`
         WHERE `TARGETNAME` IS NOT NULL AND TRIM(`TARGETNAME`) <> ''
