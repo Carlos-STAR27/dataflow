@@ -1237,16 +1237,26 @@ def upsert_status(table_name: str, item_count: int = 0) -> Dict[str, str | int]:
     }
 
 
-def parse_upload_to_dataframe(upload_file: UploadFile, sheet_name: str | None) -> pd.DataFrame:
+def parse_upload_to_dataframe(
+    upload_file: UploadFile,
+    sheet_name: str | None,
+    header_row_num: int = 1,
+) -> pd.DataFrame:
     filename = (upload_file.filename or "").lower()
     content = upload_file.file.read()
+    header_index = max(0, int(header_row_num or 1) - 1)
 
     if filename.endswith(".csv"):
-        return pd.read_csv(io.BytesIO(content), dtype=str).fillna("")
+        return pd.read_csv(io.BytesIO(content), dtype=str, header=header_index).fillna("")
 
     if filename.endswith(".xlsx") or filename.endswith(".xls"):
         target_sheet = sheet_name if sheet_name else 0
-        return pd.read_excel(io.BytesIO(content), sheet_name=target_sheet, dtype=str).fillna("")
+        return pd.read_excel(
+            io.BytesIO(content),
+            sheet_name=target_sheet,
+            dtype=str,
+            header=header_index,
+        ).fillna("")
 
     raise HTTPException(status_code=400, detail="Unsupported file type, only xlsx/xls/csv")
 
@@ -2057,6 +2067,7 @@ def execute_import(
     table_name: str = Form(...),
     mapping_json: str = Form(...),
     sheet_name: str = Form(""),
+    header_row_num: int = Form(1),
     duplicate_mode: str = Form("fail"),
     file: UploadFile = File(...),
 ) -> Dict[str, str | int]:
@@ -2076,14 +2087,23 @@ def execute_import(
     if not isinstance(mapping, dict):
         raise HTTPException(status_code=400, detail="mapping_json must be an object")
 
-    source_df = parse_upload_to_dataframe(file, sheet_name or None)
+    header_row_num = max(1, min(int(header_row_num or 1), 10))
+
+    try:
+        source_df = parse_upload_to_dataframe(file, sheet_name or None, header_row_num)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"导入失败：标题行数第{header_row_num}行超出文件有效范围，请调整后重试。",
+        ) from exc
+
     if source_df.empty:
         filename = str(file.filename or "").strip() or "<unknown>"
         target_sheet = str(sheet_name or "").strip() or "首个Sheet/CSV"
         raise HTTPException(
             status_code=400,
             detail=(
-                f"导入失败：文件 {filename} 在 {target_sheet} 未读取到可导入数据行。"
+                f"导入失败：文件 {filename} 在 {target_sheet}（标题行=第{header_row_num}行）未读取到可导入数据行。"
                 "请确认文件包含表头且至少有 1 行数据，并检查是否选对了 Sheet。"
             ),
         )

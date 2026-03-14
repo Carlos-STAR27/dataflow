@@ -1847,6 +1847,7 @@
     formData.append("table_name", tableName);
     formData.append("mapping_json", JSON.stringify(mapping));
     formData.append("sheet_name", sheetName || "");
+    formData.append("header_row_num", String(getHeaderRowNumber()));
     formData.append("duplicate_mode", duplicateMode);
     formData.append("file", file);
 
