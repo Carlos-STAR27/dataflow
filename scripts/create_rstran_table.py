@@ -16,9 +16,15 @@ TABLE_NAME = "rstran"
 def build_columns(frame: pd.DataFrame):
     columns = []
     primary_keys = []
+    seen_fields = set()
 
     for _, row in frame.iterrows():
         field = str(row["Field"]).strip()
+        if field.upper() == "DATASOURCE":
+            field = "SOURCE"
+        if field in seen_fields:
+            continue
+        seen_fields.add(field)
         dtype = str(row["Data type"]).strip().lower()
         length = int(row["Len"])
         decimals = int(row["Decimals"]) if not pd.isna(row["Decimals"]) else 0

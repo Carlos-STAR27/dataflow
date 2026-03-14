@@ -382,6 +382,29 @@ body:not(.flow-only) .layout.centered {
   padding: 0 6px;
 }
 
+.fixed-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.fixed-inline input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+
+.fixed-select-wrap,
+.excel-select-wrap {
+  width: 100%;
+}
+
+.fixed-select-wrap.hidden,
+.excel-select-wrap.hidden {
+  display: none;
+}
+
 .import-map-table tr.mapped-row td {
   background: transparent;
 }
@@ -398,8 +421,92 @@ body:not(.flow-only) .layout.centered {
   gap: 10px;
 }
 
-#clearAllTableDataBtn {
-  margin-right: 20px;
+.dialog-shell {
+  transform: translate3d(var(--dialog-shell-dx, 0px), var(--dialog-shell-dy, 0px), 0);
+}
+
+.dialog-shell .import-head {
+  cursor: grab;
+}
+
+.dialog-shell.dragging .import-head {
+  cursor: grabbing;
+}
+
+.dialog-shell.resizing {
+  user-select: none;
+}
+
+.dialog-shell.maximized {
+  transform: none;
+}
+
+.dialog-resize-handle {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  cursor: nwse-resize;
+  background:
+    linear-gradient(135deg, transparent 48%, rgba(232, 241, 255, 0.7) 49%, rgba(232, 241, 255, 0.7) 55%, transparent 56%),
+    linear-gradient(135deg, transparent 62%, rgba(232, 241, 255, 0.55) 63%, rgba(232, 241, 255, 0.55) 69%, transparent 70%),
+    linear-gradient(135deg, transparent 76%, rgba(232, 241, 255, 0.38) 77%, rgba(232, 241, 255, 0.38) 83%, transparent 84%);
+  opacity: 0.9;
+}
+
+.dialog-shell.maximized .dialog-resize-handle {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
+.modal-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 35;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 10, 18, 0.28);
+  backdrop-filter: blur(2px);
+}
+
+.modal-loading.hidden {
+  display: none;
+}
+
+.modal-loading-card {
+  min-width: 180px;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(189, 216, 255, 0.35);
+  background: linear-gradient(180deg, rgba(22, 39, 63, 0.86), rgba(13, 26, 46, 0.86));
+  box-shadow: 0 12px 28px rgba(5, 12, 24, 0.45);
+}
+
+.modal-loading-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 3px solid rgba(151, 187, 236, 0.35);
+  border-top-color: rgba(124, 246, 204, 0.95);
+  border-right-color: rgba(117, 181, 255, 0.9);
+  animation: modal-spinner-rotate 0.85s linear infinite;
+}
+
+.modal-loading-text {
+  font-size: 13px;
+  color: rgba(228, 240, 255, 0.96);
+}
+
+@keyframes modal-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .selected-outline {

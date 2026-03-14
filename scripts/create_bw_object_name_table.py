@@ -16,11 +16,38 @@ TABLE_NAME = "bw_object_name"
 def build_columns(frame: pd.DataFrame):
     columns = []
     primary_keys = []
+    seen_fields = set()
+
+    # Legacy template compatibility: map NAME/OBJECT_NAME => NAME_EN.
+    frame = frame.copy()
+    frame["Field"] = frame["Field"].astype(str).str.strip().replace({"OBJECT_NAME": "NAME_EN", "NAME": "NAME_EN"})
+    if not (frame["Field"].str.upper() == "NAME_DE").any():
+        frame = pd.concat(
+            [
+                frame,
+                pd.DataFrame(
+                    [
+                        {
+                            "Field": "NAME_DE",
+                            "Data type": "varchar",
+                            "Len": 255,
+                            "Decimals": 0,
+                            "Field Text": "Object Name (DE)",
+                            "KEY": "",
+                        }
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
 
     for _, row in frame.iterrows():
         field = str(row["Field"]).strip()
         if field.upper() == "DATASOURCE":
             continue
+        if field in seen_fields:
+            continue
+        seen_fields.add(field)
         dtype = str(row["Data type"]).strip().lower()
         length = int(row["Len"])
         decimals = int(row["Decimals"]) if not pd.isna(row["Decimals"]) else 0

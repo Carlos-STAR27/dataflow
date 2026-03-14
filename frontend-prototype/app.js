@@ -93,7 +93,6 @@
   const importProgressBar = document.getElementById("importProgressBar");
   const importMapBody = document.getElementById("importMapBody");
   const autoMapBtn = document.getElementById("autoMapBtn");
-  const clearAllTableDataBtn = document.getElementById("clearAllTableDataBtn");
   const confirmImportBtn = document.getElementById("confirmImportBtn");
   const appToast = document.getElementById("appToast");
   const appToastText = document.getElementById("appToastText");
@@ -376,21 +375,30 @@
   const importSchemas = {
     rstran: [
       "TRANID", "OWNER", "TSTPNM", "SOURCETYPE", "SOURCESUBTYPE", "SOURCENAME", "TARGETTYPE", "TARGETSUBTYPE",
-      "TARGETNAME", "STARTROUTINE", "ENDROUTINE", "EXPERT", "GLBCODE", "TRANPROG", "GLBCODE2", "SOURCESYS", "DATASOURCE"
+      "TARGETNAME", "STARTROUTINE", "ENDROUTINE", "EXPERT", "GLBCODE", "TRANPROG", "GLBCODE2", "SOURCESYS", "SOURCE"
     ],
-    bw_object_name: ["BW_OBJECT", "SOURCESYS", "BW_OBJECT_TYPE", "OBJECT_NAME"]
+    bw_object_name: ["BW_OBJECT", "SOURCESYS", "BW_OBJECT_TYPE", "NAME_EN", "NAME_DE"]
   };
 
   const logicManagedFields = {
     rstran: {
       SOURCESYS: "__LOGIC_SOURCENAME_SPLIT_LAST__",
-      DATASOURCE: "__LOGIC_SOURCENAME_SPLIT_FIRST__"
+      SOURCE: "__LOGIC_SOURCENAME_SPLIT_FIRST__"
     }
   };
 
   const logicRuleDesc = {
-    rstran: "逻辑规则: SOURCENAME按空格拆分，前段->DATASOURCE，后段->SOURCESYS"
+    rstran: "逻辑规则: SOURCENAME按空格拆分，前段->SOURCE，后段->SOURCESYS"
   };
+
+  const bwObjectFixedSourceOptions = [
+    "IOBJ InfoObject",
+    "ADSO Data model",
+    "ELEM Query",
+    "HCPR Composite Provider",
+    "RSDS Datasource",
+    "TRCS Transfermation"
+  ];
   function esc(str) {
     return String(str)
       .replaceAll("&", "&amp;")
@@ -459,6 +467,146 @@
     }, holdMs);
   }
 
+  function ensureModalLoadingOverlay(modal) {
+    if (!modal) return null;
+    let overlay = modal.querySelector(".modal-loading");
+    if (overlay) return overlay;
+
+    overlay = document.createElement("div");
+    overlay.className = "modal-loading hidden";
+    overlay.innerHTML = `
+      <div class="modal-loading-card">
+        <div class="modal-loading-spinner" aria-hidden="true"></div>
+        <div class="modal-loading-text">处理中...</div>
+      </div>
+    `;
+    modal.appendChild(overlay);
+    return overlay;
+  }
+
+  function setModalLoading(modal, isBusy, text = "处理中...") {
+    const overlay = ensureModalLoadingOverlay(modal);
+    if (!overlay) return;
+    const textNode = overlay.querySelector(".modal-loading-text");
+    if (textNode) {
+      textNode.textContent = text;
+    }
+    overlay.classList.toggle("hidden", !isBusy);
+  }
+
+  async function withModalLoading(modal, text, runner) {
+    setModalLoading(modal, true, text);
+    try {
+      return await runner();
+    } finally {
+      setModalLoading(modal, false);
+    }
+  }
+
+  function setupDialogDragAndResize(modal, shell) {
+    if (!modal || !shell) return;
+    const head = shell.querySelector(".import-head");
+    if (!head) return;
+
+    shell.classList.add("dialog-shell");
+
+    let resizeHandle = shell.querySelector(".dialog-resize-handle");
+    if (!resizeHandle) {
+      resizeHandle = document.createElement("div");
+      resizeHandle.className = "dialog-resize-handle";
+      resizeHandle.title = "拖动调整窗口大小";
+      resizeHandle.setAttribute("aria-hidden", "true");
+      shell.appendChild(resizeHandle);
+    }
+
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let startDx = 0;
+    let startDy = 0;
+
+    const getOffset = (name) => {
+      const raw = shell.style.getPropertyValue(name).trim();
+      const parsed = Number.parseFloat(raw || "0");
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const clampOffset = (dx, dy) => {
+      const rect = shell.getBoundingClientRect();
+      const maxX = Math.max(0, (window.innerWidth - rect.width) / 2);
+      const maxY = Math.max(0, (window.innerHeight - rect.height) / 2);
+      return {
+        dx: Math.max(-maxX, Math.min(maxX, dx)),
+        dy: Math.max(-maxY, Math.min(maxY, dy))
+      };
+    };
+
+    const onDragMove = (event) => {
+      const nextDx = startDx + (event.clientX - dragStartX);
+      const nextDy = startDy + (event.clientY - dragStartY);
+      const clamped = clampOffset(nextDx, nextDy);
+      shell.style.setProperty("--dialog-shell-dx", `${clamped.dx}px`);
+      shell.style.setProperty("--dialog-shell-dy", `${clamped.dy}px`);
+    };
+
+    const onDragUp = () => {
+      shell.classList.remove("dragging");
+      window.removeEventListener("pointermove", onDragMove);
+      window.removeEventListener("pointerup", onDragUp);
+    };
+
+    head.addEventListener("pointerdown", (event) => {
+      const blockDrag = event.target.closest("button, input, select, .window-controls");
+      if (blockDrag || shell.classList.contains("maximized")) return;
+
+      dragStartX = event.clientX;
+      dragStartY = event.clientY;
+      startDx = getOffset("--dialog-shell-dx");
+      startDy = getOffset("--dialog-shell-dy");
+
+      shell.classList.add("dragging");
+      window.addEventListener("pointermove", onDragMove);
+      window.addEventListener("pointerup", onDragUp);
+    });
+
+    const minWidth = 520;
+    const minHeight = 260;
+    let resizeStartX = 0;
+    let resizeStartY = 0;
+    let resizeStartW = 0;
+    let resizeStartH = 0;
+
+    const onResizeMove = (event) => {
+      const maxWidth = window.innerWidth - 32;
+      const maxHeight = window.innerHeight - 32;
+      const width = Math.max(minWidth, Math.min(maxWidth, resizeStartW + (event.clientX - resizeStartX)));
+      const height = Math.max(minHeight, Math.min(maxHeight, resizeStartH + (event.clientY - resizeStartY)));
+      shell.style.width = `${width}px`;
+      shell.style.height = `${height}px`;
+      shell.dataset.restoreWidth = shell.style.width;
+      shell.dataset.restoreHeight = shell.style.height;
+    };
+
+    const onResizeUp = () => {
+      shell.classList.remove("resizing");
+      window.removeEventListener("pointermove", onResizeMove);
+      window.removeEventListener("pointerup", onResizeUp);
+    };
+
+    resizeHandle.addEventListener("pointerdown", (event) => {
+      if (shell.classList.contains("maximized")) return;
+      event.preventDefault();
+      const rect = shell.getBoundingClientRect();
+      resizeStartX = event.clientX;
+      resizeStartY = event.clientY;
+      resizeStartW = rect.width;
+      resizeStartH = rect.height;
+
+      shell.classList.add("resizing");
+      window.addEventListener("pointermove", onResizeMove);
+      window.addEventListener("pointerup", onResizeUp);
+    });
+  }
+
   function clearImportProgressTimer() {
     if (importProgressTimer) {
       window.clearInterval(importProgressTimer);
@@ -482,7 +630,7 @@
     if (importModalShell) {
       importModalShell.classList.toggle("is-busy", isBusy);
     }
-    [importFileInput, importSheetSelect, importHeaderRowSelect, autoMapBtn, clearAllTableDataBtn, confirmImportBtn].forEach((el) => {
+    [importFileInput, importSheetSelect, importHeaderRowSelect, autoMapBtn, confirmImportBtn].forEach((el) => {
       if (!el) return;
       el.disabled = isBusy;
     });
@@ -963,6 +1111,7 @@
   async function renderMoreTable(keyword, searchMode = false) {
     const key = (keyword || "").trim();
     moreTableBody.innerHTML = '<tr><td colspan="4">加载中...</td></tr>';
+    setModalLoading(morePage, true, "正在查找...");
 
     try {
       const rows = await fetchMoreRows(key, searchMode);
@@ -986,6 +1135,8 @@
         return;
       }
       moreTableBody.innerHTML = '<tr><td colspan="4">加载失败，请确认后端服务已启动</td></tr>';
+    } finally {
+      setModalLoading(morePage, false);
     }
   }
 
@@ -1042,6 +1193,7 @@
         window.alert("请输入至少3个字符后再查找。默认仅展示前100条。");
         return;
       }
+      moreSearchBtn.classList.add("selected-outline");
       renderMoreTable(key, true);
     });
     moreSearchInput.addEventListener("keydown", (event) => {
@@ -1051,6 +1203,7 @@
           window.alert("请输入至少3个字符后再查找。默认仅展示前100条。");
           return;
         }
+        moreSearchBtn.classList.add("selected-outline");
         renderMoreTable(key, true);
       }
     });
@@ -1385,10 +1538,12 @@
       }
       try {
         setLoginError("");
-        // Invalidate any older bootstrapAuth result still in flight.
-        authStateEpoch += 1;
-        await authLogin(username, password);
-        currentUser = await authMe();
+        await withModalLoading(loginGate, "登录中...", async () => {
+          // Invalidate any older bootstrapAuth result still in flight.
+          authStateEpoch += 1;
+          await authLogin(username, password);
+          currentUser = await authMe();
+        });
         if (loginPassword) loginPassword.value = "";
         if (loginShowPassword) {
           loginShowPassword.checked = false;
@@ -1541,7 +1696,9 @@
           return;
         }
         try {
-          await authChangePassword(oldPass, newPass);
+          await withModalLoading(changePasswordModal, "正在修改密码...", async () => {
+            await authChangePassword(oldPass, newPass);
+          });
           showToast("密码修改成功");
           changePasswordModal?.classList.add("hidden");
         } catch (err) {
@@ -1555,7 +1712,9 @@
         if (!currentUser || currentUser.role !== "admin") return;
         userAdminModal?.classList.remove("hidden");
         try {
-          await refreshUserAdminTable();
+          await withModalLoading(userAdminModal, "正在加载用户...", async () => {
+            await refreshUserAdminTable();
+          });
         } catch (err) {
           showToast(`加载用户失败：${err?.message || "未知错误"}`, "error");
         }
@@ -1686,10 +1845,14 @@
           return;
         }
         try {
-          await adminResetPassword(username, newPassword);
+          await withModalLoading(adminResetUserModal, "正在修改密码...", async () => {
+            await adminResetPassword(username, newPassword);
+          });
           showToast(`用户 ${username} 密码修改成功`);
           closeAdminResetUserModalPanel();
-          await refreshUserAdminTable();
+          await withModalLoading(userAdminModal, "正在刷新列表...", async () => {
+            await refreshUserAdminTable();
+          });
         } catch (err) {
           showToast(`修改失败：${err?.message || "未知错误"}`, "error");
         }
@@ -1699,7 +1862,9 @@
     if (refreshUsersBtn) {
       refreshUsersBtn.addEventListener("click", async () => {
         try {
-          await refreshUserAdminTable();
+          await withModalLoading(userAdminModal, "正在刷新列表...", async () => {
+            await refreshUserAdminTable();
+          });
         } catch (err) {
           showToast(`刷新失败：${err?.message || "未知错误"}`, "error");
         }
@@ -1725,11 +1890,15 @@
           return;
         }
         try {
-          await adminCreateUser(username, password, role);
+          await withModalLoading(createUserModal, "正在创建用户...", async () => {
+            await adminCreateUser(username, password, role);
+          });
           if (newUserNameInput) newUserNameInput.value = "";
           if (newUserPasswordInput) newUserPasswordInput.value = "";
           closeCreateUserModalPanel();
-          await refreshUserAdminTable();
+          await withModalLoading(userAdminModal, "正在刷新列表...", async () => {
+            await refreshUserAdminTable();
+          });
           showToast("用户创建成功");
         } catch (err) {
           showToast(`创建失败：${err?.message || "未知错误"}`, "error");
@@ -1866,25 +2035,6 @@
     return resp.json();
   }
 
-  async function clearImportTable(tableName) {
-    const formData = new FormData();
-    formData.append("table_name", tableName);
-
-    const resp = await apiFetch(`${importStatusApiBase}/import/clear-table`, {
-      method: "POST",
-      body: formData,
-      timeoutMs: 120000
-    });
-
-    if (!resp.ok) {
-      const text = await resp.text();
-      const msg = parseErrorText(text, `status ${resp.status}`);
-      throw new Error(msg);
-    }
-
-    return resp.json();
-  }
-
   async function refreshImportCardTimes() {
     let payload = {};
     try {
@@ -1919,9 +2069,22 @@
     const mapping = {};
     importMapBody.querySelectorAll("tr").forEach((row) => {
       const dbField = row.dataset.dbField || "";
-      const select = row.querySelector("select");
-      if (dbField && select && select.value) {
-        mapping[dbField] = select.value;
+      const fixedToggle = row.querySelector(".js-fixed-toggle");
+      const fixedSelect = row.querySelector(".js-fixed-select");
+      const excelSelect = row.querySelector(".js-excel-select");
+
+      if (!dbField) return;
+
+      if (fixedToggle && fixedSelect && fixedToggle.checked) {
+        const fixedVal = String(fixedSelect.value || "").trim();
+        if (fixedVal) {
+          mapping[dbField] = `__FIXED__:${fixedVal}`;
+        }
+        return;
+      }
+
+      if (excelSelect && excelSelect.value) {
+        mapping[dbField] = excelSelect.value;
       }
     });
 
@@ -1942,20 +2105,63 @@
   function renderMappingRows(dbFields, excelHeaders, presetMap = {}) {
     importMapBody.innerHTML = dbFields
       .map((dbField) => {
-        const selected = presetMap[dbField] || "";
+        const presetRaw = String(presetMap[dbField] || "");
+        const isFixedRow = activeImportTable === "bw_object_name" && dbField === "SOURCESYS";
+        const isFixed = isFixedRow && presetRaw.startsWith("__FIXED__:");
+        const fixedVal = isFixed ? presetRaw.replace("__FIXED__:", "") : "";
+        const selected = isFixed ? "" : presetRaw;
         const options = buildMapOptions(excelHeaders, selected);
-        const rowClass = selected ? "mapped-row" : "";
-        return `<tr data-db-field="${esc(dbField)}" class="${rowClass}"><td>${esc(dbField)}</td><td><select>${options}</select></td></tr>`;
+        const fixedOptions = bwObjectFixedSourceOptions
+          .map((item) => `<option value="${escAttr(item)}" ${fixedVal === item ? "selected" : ""}>${esc(item)}</option>`)
+          .join("");
+        const rowClass = isFixed ? Boolean(fixedVal) : Boolean(selected);
+
+        return `
+          <tr data-db-field="${esc(dbField)}" class="${rowClass ? "mapped-row" : ""}">
+            <td>${esc(dbField)}</td>
+            <td>
+              ${isFixedRow
+                ? `<label class="fixed-inline"><input type="checkbox" class="js-fixed-toggle" ${isFixed ? "checked" : ""} /><span>固定值</span></label>`
+                : ""}
+            </td>
+            <td>
+              ${isFixedRow
+                ? `<div class="fixed-select-wrap ${isFixed ? "" : "hidden"}"><select class="js-fixed-select">${fixedOptions}</select></div>`
+                : ""}
+              <div class="excel-select-wrap ${isFixed ? "hidden" : ""}"><select class="js-excel-select">${options}</select></div>
+            </td>
+          </tr>
+        `;
       })
       .join("");
 
     importMapBody.querySelectorAll("tr").forEach((row) => {
-      const select = row.querySelector("select");
-      if (!select) return;
-      select.addEventListener("change", () => {
-        row.classList.toggle("mapped-row", Boolean(select.value));
+      const fixedToggle = row.querySelector(".js-fixed-toggle");
+      const fixedSelect = row.querySelector(".js-fixed-select");
+      const excelSelect = row.querySelector(".js-excel-select");
+      const fixedWrap = row.querySelector(".fixed-select-wrap");
+      const excelWrap = row.querySelector(".excel-select-wrap");
+
+      const refreshRow = () => {
+        const fixedOn = Boolean(fixedToggle?.checked);
+        if (fixedWrap) fixedWrap.classList.toggle("hidden", !fixedOn);
+        if (excelWrap) excelWrap.classList.toggle("hidden", fixedOn);
+        const hasValue = fixedOn ? Boolean(fixedSelect?.value) : Boolean(excelSelect?.value);
+        row.classList.toggle("mapped-row", hasValue);
         renderMappingProgressMeta();
-      });
+      };
+
+      if (fixedToggle) {
+        fixedToggle.addEventListener("change", refreshRow);
+      }
+      if (fixedSelect) {
+        fixedSelect.addEventListener("change", refreshRow);
+      }
+      if (excelSelect) {
+        excelSelect.addEventListener("change", refreshRow);
+      }
+
+      refreshRow();
     });
 
     renderMappingProgressMeta();
@@ -2178,6 +2384,9 @@
     importTaskLock = false;
     resetImportProgress();
     importModalTitle.textContent = `字段映射 - ${tableName}`;
+    if (confirmImportBtn) {
+      confirmImportBtn.textContent = tableName === "bw_object_name" ? "更新" : "开始导入";
+    }
     importMeta.innerHTML = "";
     importFileInput.value = "";
     if (importHeaderRowSelect) {
@@ -2326,31 +2535,6 @@
       renderMappingRows(dbFields, activeExcelHeaders, suggested);
     });
 
-    if (clearAllTableDataBtn) {
-      clearAllTableDataBtn.addEventListener("click", async () => {
-        if (importTaskLock) return;
-        const ok = window.confirm(`确认删除当前表(${activeImportTable})的全部数据吗？此操作不可撤销。`);
-        if (!ok) return;
-
-        try {
-          importTaskLock = true;
-          setImportBusyState(true, "正在删除库表数据...");
-          const result = await clearImportTable(activeImportTable);
-          await refreshImportCardTimes();
-          const deletedCount = Number(result.deleted_rows || 0);
-          const currentCount = Number(result.current_count || 0);
-          const successText = `删除完成：${result.table_name}，共删除 ${deletedCount} 条，当前数据条目 ${currentCount} 条，更新时间 ${result.last_update}。`;
-          showToast(successText);
-          completeImportBusyState();
-        } catch (err) {
-          showToast(`删除失败，请确认后端服务已启动（${importStatusApiBase}）。${err?.message ? ` 详情: ${err.message}` : ""}`, "error");
-          setImportBusyState(false);
-        } finally {
-          importTaskLock = false;
-        }
-      });
-    }
-
     confirmImportBtn.addEventListener("click", async () => {
       if (importTaskLock) return;
       if (!activeImportTable) return;
@@ -2386,7 +2570,7 @@
           sheetName: payload.sheetName,
           file: payload.file,
           headerRowNum: payload.headerRowNum,
-          duplicateMode: "fail"
+          duplicateMode: activeImportTable === "bw_object_name" ? "update" : "fail"
         });
         await refreshImportCardTimes();
         const importedCount = Number(result.db_count ?? result.affected_rows ?? 0);
@@ -2395,47 +2579,6 @@
         completeImportBusyState();
       } catch (err) {
         const rawMsg = String(err?.message || "").trim();
-        if (activeImportTable === "bw_object_name" && /重复组合键/.test(rawMsg)) {
-          const shouldContinue = window.confirm("检测到重复组合键。点击“确定”将继续导入并自动保留每组重复键的最后一条记录；点击“取消”将终止本次导入。");
-          if (!shouldContinue) {
-            showToast("已取消导入。", "error");
-            setImportBusyState(false);
-            return;
-          }
-
-          try {
-            if (importProgressText) {
-              importProgressText.textContent = "检测到重复数据，正在自动去重后继续导入...";
-            }
-            const sheetName = importSheetSelect && !importSheetSelect.disabled ? importSheetSelect.value : "";
-            const headerRowNumber = getHeaderRowNumber();
-            const payload = await buildImportPayloadByHeaderRow(selectedFile, sheetName, headerRowNumber);
-            const retryResult = await executeImport({
-              tableName: activeImportTable,
-              mapping,
-              sheetName: payload.sheetName,
-              file: payload.file,
-              headerRowNum: payload.headerRowNum,
-              duplicateMode: "continue"
-            });
-            await refreshImportCardTimes();
-            const importedCount = Number(retryResult.db_count ?? retryResult.affected_rows ?? 0);
-            const dropped = Number(retryResult.collapsed_duplicate_rows || 0);
-            const suffix = dropped > 0 ? `（已去重 ${dropped} 行）` : "";
-            showToast(`导入完成: ${retryResult.table_name}，当前数据条目 ${importedCount}，更新时间 ${retryResult.last_update}${suffix}`);
-            completeImportBusyState();
-            return;
-          } catch (retryErr) {
-            const retryMsg = String(retryErr?.message || "").trim();
-            if (/internal server error|status 500/i.test(retryMsg)) {
-              showToast("导入失败：后端服务内部错误。请稍后重试；若持续失败，请在 Render 查看服务日志。", "error");
-            } else {
-              showToast(`导入失败，请确认后端服务已启动（${importStatusApiBase}）。${retryMsg ? ` 详情: ${retryMsg}` : ""}`, "error");
-            }
-            setImportBusyState(false);
-            return;
-          }
-        }
         if (/no rows to import/i.test(rawMsg)) {
           showToast("导入失败：文件未读取到可导入数据行。请确认有表头并至少包含1行数据，再重试。", "error");
         } else if (/未读取到可导入数据行/.test(rawMsg)) {
@@ -2598,6 +2741,11 @@
     setupMoreDialogDrag();
     setupMoreDialogResize();
     setupMoreTableResize();
+    setupDialogDragAndResize(importModal, importModalShell);
+    setupDialogDragAndResize(changePasswordModal, changePasswordModalShell);
+    setupDialogDragAndResize(userAdminModal, userAdminModalShell);
+    setupDialogDragAndResize(createUserModal, createUserModalShell);
+    setupDialogDragAndResize(adminResetUserModal, adminResetUserModalShell);
     setupSelectionHighlight();
     setupImportMapping();
     void bootstrapAuth();

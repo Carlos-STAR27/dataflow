@@ -195,7 +195,12 @@ def ensure_status_table() -> None:
 
 
 def ensure_bw_object_name_schema() -> None:
-    """Keep bw_object_name schema aligned with business rule: SOURCESYS can be NULL."""
+    """Keep bw_object_name schema aligned with business rules.
+
+    - SOURCESYS can be NULL.
+    - Use NAME_EN / NAME_DE fields.
+    - Remove legacy OBJECT_NAME field.
+    """
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -210,6 +215,68 @@ def ensure_bw_object_name_schema() -> None:
         if int(cur.fetchone()[0]) == 0:
             conn.commit()
             return
+
+        cur.execute(
+            """
+            SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_COMMENT
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'bw_object_name'
+            """,
+            (DB_CONFIG["database"],),
+        )
+        col_rows = cur.fetchall()
+        col_map = {
+            str(name): {
+                "type": str(col_type),
+                "nullable": str(is_nullable).upper() == "YES",
+                "comment": str(comment or ""),
+            }
+            for name, col_type, is_nullable, comment in col_rows
+        }
+
+        # Migrate OBJECT_NAME -> NAME_EN when needed.
+        if "NAME_EN" not in col_map:
+            if "OBJECT_NAME" in col_map:
+                src = col_map["OBJECT_NAME"]
+                nullable_sql = "NULL" if src["nullable"] else "NOT NULL"
+                escaped_comment = src["comment"].replace("'", "''")
+                comment_sql = f" COMMENT '{escaped_comment}'" if src["comment"] else ""
+                cur.execute(
+                    f"ALTER TABLE `bw_object_name` CHANGE COLUMN `OBJECT_NAME` `NAME_EN` {src['type']} {nullable_sql}{comment_sql}"
+                )
+            else:
+                cur.execute("ALTER TABLE `bw_object_name` ADD COLUMN `NAME_EN` VARCHAR(255) NULL")
+
+        # Ensure NAME_DE exists.
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'bw_object_name' AND COLUMN_NAME = 'NAME_DE'
+            """,
+            (DB_CONFIG["database"],),
+        )
+        if int(cur.fetchone()[0]) == 0:
+            cur.execute("ALTER TABLE `bw_object_name` ADD COLUMN `NAME_DE` VARCHAR(255) NULL")
+
+        # If OBJECT_NAME still exists after migration, merge then drop.
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'bw_object_name' AND COLUMN_NAME = 'OBJECT_NAME'
+            """,
+            (DB_CONFIG["database"],),
+        )
+        has_object_name = int(cur.fetchone()[0]) > 0
+        if has_object_name:
+            cur.execute(
+                """
+                UPDATE `bw_object_name`
+                SET `NAME_EN` = COALESCE(NULLIF(TRIM(`NAME_EN`), ''), NULLIF(TRIM(`OBJECT_NAME`), ''))
+                """
+            )
+            cur.execute("ALTER TABLE `bw_object_name` DROP COLUMN `OBJECT_NAME`")
 
         cur.execute(
             """
@@ -249,6 +316,66 @@ def ensure_bw_object_name_schema() -> None:
                     cur.execute(
                         "CREATE INDEX `idx_bw_object_lookup` ON `bw_object_name` (`BW_OBJECT`, `BW_OBJECT_TYPE`, `SOURCESYS`)"
                     )
+        else:
+            cur.execute("SHOW INDEX FROM `bw_object_name` WHERE Key_name = 'idx_bw_object_lookup'")
+            if not cur.fetchall():
+                cur.execute(
+                    "CREATE INDEX `idx_bw_object_lookup` ON `bw_object_name` (`BW_OBJECT`, `BW_OBJECT_TYPE`, `SOURCESYS`)"
+                )
+
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def ensure_rstran_schema() -> None:
+    """Keep rstran schema aligned with SOURCE naming rule."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'rstran'
+            """,
+            (DB_CONFIG["database"],),
+        )
+        if int(cur.fetchone()[0]) == 0:
+            conn.commit()
+            return
+
+        cur.execute(
+            """
+            SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'rstran'
+            """,
+            (DB_CONFIG["database"],),
+        )
+        rows = cur.fetchall()
+        col_map = {str(name): (str(col_type), str(is_nullable).upper() == "YES") for name, col_type, is_nullable in rows}
+
+        if "SOURCE" not in col_map:
+            if "DATASOURCE" in col_map:
+                src_type, src_nullable = col_map["DATASOURCE"]
+                nullable_sql = "NULL" if src_nullable else "NOT NULL"
+                cur.execute(f"ALTER TABLE `rstran` ADD COLUMN `SOURCE` {src_type} {nullable_sql}")
+                cur.execute("UPDATE `rstran` SET `SOURCE` = `DATASOURCE` WHERE `SOURCE` IS NULL")
+            else:
+                cur.execute("ALTER TABLE `rstran` ADD COLUMN `SOURCE` VARCHAR(255) NULL")
+
+        # Backfill SOURCE from SOURCENAME first token when still empty.
+        cur.execute(
+            """
+            UPDATE `rstran`
+            SET `SOURCE` = NULLIF(TRIM(SUBSTRING_INDEX(TRIM(`SOURCENAME`), ' ', 1)), '')
+            WHERE (`SOURCE` IS NULL OR TRIM(`SOURCE`) = '')
+              AND `SOURCENAME` IS NOT NULL
+              AND TRIM(`SOURCENAME`) <> ''
+            """
+        )
 
         conn.commit()
     finally:
@@ -607,7 +734,7 @@ def _build_graph_engine_by_source(start_name: str, max_nodes: int = 2000, max_ed
             if len(node_types) >= max_nodes or len(edges) >= max_edges:
                 break
 
-        # Enrich all discovered technical names with OBJECT_NAME from bw_object_name.
+        # Enrich all discovered technical names with NAME_EN from bw_object_name.
         all_node_names = list(node_types.keys())
         batch_size = 500
         for start in range(0, len(all_node_names), batch_size):
@@ -617,7 +744,7 @@ def _build_graph_engine_by_source(start_name: str, max_nodes: int = 2000, max_ed
             placeholders = ",".join(["%s"] * len(batch))
             cur.execute(
                 f"""
-                SELECT BW_OBJECT, MAX(OBJECT_NAME) AS OBJECT_NAME
+                SELECT BW_OBJECT, MAX(NAME_EN) AS NAME_EN
                 FROM bw_object_name
                 WHERE BW_OBJECT IN ({placeholders})
                 GROUP BY BW_OBJECT
@@ -836,7 +963,7 @@ def build_graph_both(start_name: str, max_nodes: int = 2000, max_edges: int = 50
             placeholders = ",".join(["%s"] * len(batch))
             cur.execute(
                 f"""
-                SELECT BW_OBJECT, MAX(OBJECT_NAME) AS OBJECT_NAME
+                SELECT BW_OBJECT, MAX(NAME_EN) AS NAME_EN
                 FROM bw_object_name
                 WHERE BW_OBJECT IN ({placeholders})
                 GROUP BY BW_OBJECT
@@ -1004,7 +1131,7 @@ def build_graph_full(start_name: str, max_nodes: int = 2000, max_edges: int = 50
             placeholders = ",".join(["%s"] * len(batch))
             cur.execute(
                 f"""
-                SELECT BW_OBJECT, MAX(OBJECT_NAME) AS OBJECT_NAME
+                SELECT BW_OBJECT, MAX(NAME_EN) AS NAME_EN
                 FROM bw_object_name
                 WHERE BW_OBJECT IN ({placeholders})
                 GROUP BY BW_OBJECT
@@ -1155,7 +1282,7 @@ def _build_graph_engine_by_target(start_name: str, max_nodes: int = 2000, max_ed
             placeholders = ",".join(["%s"] * len(batch))
             cur.execute(
                 f"""
-                SELECT BW_OBJECT, MAX(OBJECT_NAME) AS OBJECT_NAME
+                SELECT BW_OBJECT, MAX(NAME_EN) AS NAME_EN
                 FROM bw_object_name
                 WHERE BW_OBJECT IN ({placeholders})
                 GROUP BY BW_OBJECT
@@ -1270,7 +1397,10 @@ def apply_rstran_logic(mapped_df: pd.DataFrame) -> pd.DataFrame:
     first_part = split_vals[0].fillna("") if 0 in split_vals.columns else ""
     second_part = split_vals[1].fillna("") if 1 in split_vals.columns else ""
 
+    if "SOURCE" in mapped_df.columns:
+        mapped_df["SOURCE"] = first_part
     if "DATASOURCE" in mapped_df.columns:
+        # Compatibility with legacy schema/exports.
         mapped_df["DATASOURCE"] = first_part
     if "SOURCESYS" in mapped_df.columns:
         mapped_df["SOURCESYS"] = second_part
@@ -1281,13 +1411,9 @@ def apply_rstran_logic(mapped_df: pd.DataFrame) -> pd.DataFrame:
 def apply_bw_object_name_logic(mapped_df: pd.DataFrame) -> pd.DataFrame:
     """Normalize object-name records."""
 
-    for col in ("BW_OBJECT", "BW_OBJECT_TYPE", "OBJECT_NAME", "SOURCESYS"):
+    for col in ("BW_OBJECT", "BW_OBJECT_TYPE", "NAME_EN", "NAME_DE", "SOURCESYS"):
         if col in mapped_df.columns:
             mapped_df[col] = mapped_df[col].astype(str).str.strip()
-
-    if "SOURCESYS" in mapped_df.columns:
-        # Business rule: clear SOURCESYS before saving when value length is less than 3.
-        mapped_df.loc[mapped_df["SOURCESYS"].str.len() < 3, "SOURCESYS"] = ""
 
     return mapped_df
 
@@ -1318,9 +1444,6 @@ def check_duplicates_by_mapped_columns(
         else:
             series = pd.Series(["" for _ in range(len(mapped_df))], index=mapped_df.index)
             mapped_sources[db_field] = "<未映射>"
-
-        if table_name == "bw_object_name" and db_field == "SOURCESYS":
-            series = series.where(series.str.len() >= 3, "")
 
         key_df[db_field] = series.map(normalize_cell)
 
@@ -1362,9 +1485,6 @@ def collapse_duplicate_rows_by_keys(
             series = mapped_df[db_field].astype(str).str.strip()
         else:
             series = pd.Series(["" for _ in range(len(mapped_df))], index=mapped_df.index)
-
-        if table_name == "bw_object_name" and db_field == "SOURCESYS":
-            series = series.where(series.str.len() >= 3, "")
 
         key_df[db_field] = series.map(normalize_cell)
 
@@ -1466,6 +1586,7 @@ async def auth_guard(request: Request, call_next):
 @app.on_event("startup")
 def startup() -> None:
     ensure_status_table()
+    ensure_rstran_schema()
     ensure_bw_object_name_schema()
     ensure_auth_tables()
 
@@ -1805,74 +1926,6 @@ def upsert_import_status(payload: ImportStatusUpdate) -> Dict[str, str | int]:
     return {"table_name": table_name, "last_update": status["last_update"], "last_count": status["last_count"]}
 
 
-@app.post("/api/import/clear-all")
-def clear_all_tables() -> Dict[str, object]:
-    conn = get_conn()
-    cur = conn.cursor()
-    deleted_by_table: Dict[str, int] = {}
-
-    try:
-        for table in sorted(ALLOWED_TABLES):
-            cur.execute(f"DELETE FROM `{table}`")
-            deleted_by_table[table] = int(cur.rowcount)
-        conn.commit()
-    except mysql.connector.Error as exc:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail="删除失败，请稍后重试。") from exc
-    finally:
-        cur.close()
-        conn.close()
-
-    status_by_table: Dict[str, Dict[str, str | int]] = {}
-    current_by_table: Dict[str, int] = {}
-    for table in sorted(ALLOWED_TABLES):
-        current_count = count_table_rows(table)
-        current_by_table[table] = current_count
-        status_by_table[table] = upsert_status(table, current_count)
-
-    total_deleted = int(sum(deleted_by_table.values()))
-    total_current = int(sum(current_by_table.values()))
-    return {
-        "message": "All table data cleared",
-        "total_deleted": total_deleted,
-        "total_current": total_current,
-        "deleted_by_table": deleted_by_table,
-        "current_by_table": current_by_table,
-        "status_by_table": status_by_table,
-    }
-
-
-@app.post("/api/import/clear-table")
-def clear_single_table(table_name: str = Form(...)) -> Dict[str, object]:
-    table_name = table_name.strip()
-    if table_name not in ALLOWED_TABLES:
-        raise HTTPException(status_code=400, detail="Unsupported table_name")
-
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(f"DELETE FROM `{table_name}`")
-        deleted_rows = int(cur.rowcount)
-        conn.commit()
-    except mysql.connector.Error as exc:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail="删除失败，请稍后重试。") from exc
-    finally:
-        cur.close()
-        conn.close()
-
-    current_count = count_table_rows(table_name)
-    status = upsert_status(table_name, current_count)
-    return {
-        "table_name": table_name,
-        "deleted_rows": deleted_rows,
-        "current_count": current_count,
-        "last_update": status["last_update"],
-        "last_count": status["last_count"],
-        "message": "Table data cleared",
-    }
-
-
 @app.get("/api/search-more/bw-object-name")
 def search_more_bw_object_name(keyword: str = Query(default="")) -> Dict[str, object]:
     kw = (keyword or "").strip()
@@ -1884,9 +1937,9 @@ def search_more_bw_object_name(keyword: str = Query(default="")) -> Dict[str, ob
             like_kw = f"%{kw}%"
             cur.execute(
                 """
-                SELECT BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE, OBJECT_NAME
+                SELECT BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE, NAME_EN
                 FROM bw_object_name
-                WHERE BW_OBJECT LIKE %s OR OBJECT_NAME LIKE %s OR SOURCESYS LIKE %s
+                WHERE BW_OBJECT LIKE %s OR NAME_EN LIKE %s OR SOURCESYS LIKE %s
                 ORDER BY BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE
                 """,
                 (like_kw, like_kw, like_kw),
@@ -1895,7 +1948,7 @@ def search_more_bw_object_name(keyword: str = Query(default="")) -> Dict[str, ob
         else:
             cur.execute(
                 """
-                SELECT BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE, OBJECT_NAME
+                SELECT BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE, NAME_EN
                 FROM bw_object_name
                 ORDER BY BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE
                 LIMIT 100
@@ -1913,7 +1966,7 @@ def search_more_bw_object_name(keyword: str = Query(default="")) -> Dict[str, ob
         bw_object = str(row.get("BW_OBJECT") or "")
         source_sys = str(row.get("SOURCESYS") or "")
         bw_type = str(row.get("BW_OBJECT_TYPE") or "")
-        object_name = str(row.get("OBJECT_NAME") or "")
+        object_name = str(row.get("NAME_EN") or "")
         items.append(
             {
                 "type": bw_type,
@@ -1943,9 +1996,9 @@ def search_bw_object_name(keyword: str = Query(default="")) -> Dict[str, object]
         like_kw = f"%{kw}%"
         cur.execute(
             """
-            SELECT BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE, OBJECT_NAME
+            SELECT BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE, NAME_EN
             FROM bw_object_name
-            WHERE BW_OBJECT LIKE %s OR OBJECT_NAME LIKE %s OR SOURCESYS LIKE %s
+            WHERE BW_OBJECT LIKE %s OR NAME_EN LIKE %s OR SOURCESYS LIKE %s
             ORDER BY BW_OBJECT, SOURCESYS, BW_OBJECT_TYPE
             LIMIT 5
             """,
@@ -1963,7 +2016,7 @@ def search_bw_object_name(keyword: str = Query(default="")) -> Dict[str, object]
                 "type": str(row.get("BW_OBJECT_TYPE") or ""),
                 "id": str(row.get("BW_OBJECT") or ""),
                 "source": str(row.get("SOURCESYS") or ""),
-                "desc": str(row.get("OBJECT_NAME") or ""),
+                "desc": str(row.get("NAME_EN") or ""),
             }
         )
 
@@ -1992,16 +2045,17 @@ def flow_trace(
 
     # Datasource start node needs special resolution.
     # rstran stores relationship traversal in SOURCENAME/TARGETNAME, but datasource identity
-    # should be anchored by DATASOURCE + SOURCESYS to avoid ambiguous/space-padded names.
+    # should be anchored by SOURCE + SOURCESYS to avoid ambiguous/space-padded names.
     conn = get_conn()
     cur = conn.cursor()
     try:
         if normalized_type == "RSDS" and normalized_source and normalized_start_name:
+            source_col = "SOURCE" if "SOURCE" in get_table_columns("rstran") else "DATASOURCE"
             cur.execute(
-                """
+                f"""
                 SELECT SOURCENAME
                 FROM rstran
-                WHERE DATASOURCE = %s AND SOURCESYS = %s AND SOURCENAME IS NOT NULL AND TRIM(SOURCENAME) <> ''
+                WHERE {source_col} = %s AND SOURCESYS = %s AND SOURCENAME IS NOT NULL AND TRIM(SOURCENAME) <> ''
                 ORDER BY TRANID
                 LIMIT 1
                 """,
@@ -2027,7 +2081,7 @@ def flow_trace(
             )
             if cur.fetchone():
                 resolved_start_name = candidate
-                if normalized_type in {"DATASOURCE", "RSDS"} and normalized_source:
+                if normalized_type in {"SOURCE", "DATASOURCE", "RSDS"} and normalized_source:
                     break
     finally:
         cur.close()
@@ -2063,6 +2117,81 @@ def flow_trace(
     }
 
 
+def sync_bw_object_name_from_rstran(cur) -> Dict[str, int]:
+    """Upsert bw_object_name from rstran in two passes.
+
+    Pass-1:
+      BW_OBJECT <- rstran.SOURCE
+      SOURCESYS <- rstran.SOURCESYS
+      BW_OBJECT_TYPE <- rstran.SOURCETYPE
+
+    Pass-2:
+      BW_OBJECT <- rstran.TARGETNAME
+      SOURCESYS <- NULL
+      BW_OBJECT_TYPE <- rstran.TARGETTYPE
+    """
+    rstran_cols = set(get_table_columns("rstran"))
+    source_col = "SOURCE" if "SOURCE" in rstran_cols else "DATASOURCE"
+
+    pass1_subquery = f"""
+        SELECT DISTINCT
+            NULLIF(TRIM(`{source_col}`), '') AS BW_OBJECT,
+            NULLIF(TRIM(`SOURCESYS`), '') AS SOURCESYS,
+            NULLIF(TRIM(`SOURCETYPE`), '') AS BW_OBJECT_TYPE
+        FROM `rstran`
+        WHERE `{source_col}` IS NOT NULL AND TRIM(`{source_col}`) <> ''
+          AND `SOURCETYPE` IS NOT NULL AND TRIM(`SOURCETYPE`) <> ''
+    """
+
+    pass2_subquery = """
+        SELECT DISTINCT
+            NULLIF(TRIM(`TARGETNAME`), '') AS BW_OBJECT,
+            NULL AS SOURCESYS,
+            NULLIF(TRIM(`TARGETTYPE`), '') AS BW_OBJECT_TYPE
+        FROM `rstran`
+        WHERE `TARGETNAME` IS NOT NULL AND TRIM(`TARGETNAME`) <> ''
+          AND `TARGETTYPE` IS NOT NULL AND TRIM(`TARGETTYPE`) <> ''
+    """
+
+    def run_pass(subquery: str) -> tuple[int, int]:
+        cur.execute(
+            f"""
+            UPDATE `bw_object_name` b
+            JOIN ({subquery}) s
+              ON b.`BW_OBJECT` <=> s.`BW_OBJECT`
+             AND b.`SOURCESYS` <=> s.`SOURCESYS`
+             AND b.`BW_OBJECT_TYPE` <=> s.`BW_OBJECT_TYPE`
+            SET b.`NAME_EN` = COALESCE(NULLIF(TRIM(b.`NAME_EN`), ''), s.`BW_OBJECT`)
+            """
+        )
+        updated = int(cur.rowcount or 0)
+
+        cur.execute(
+            f"""
+            INSERT INTO `bw_object_name` (`BW_OBJECT`, `SOURCESYS`, `BW_OBJECT_TYPE`, `NAME_EN`, `NAME_DE`)
+            SELECT s.`BW_OBJECT`, s.`SOURCESYS`, s.`BW_OBJECT_TYPE`, s.`BW_OBJECT`, NULL
+            FROM ({subquery}) s
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM `bw_object_name` b
+                WHERE b.`BW_OBJECT` <=> s.`BW_OBJECT`
+                  AND b.`SOURCESYS` <=> s.`SOURCESYS`
+                  AND b.`BW_OBJECT_TYPE` <=> s.`BW_OBJECT_TYPE`
+            )
+            """
+        )
+        inserted = int(cur.rowcount or 0)
+        return inserted, updated
+
+    p1_inserted, p1_updated = run_pass(pass1_subquery)
+    p2_inserted, p2_updated = run_pass(pass2_subquery)
+
+    return {
+        "inserted": int(p1_inserted + p2_inserted),
+        "updated": int(p1_updated + p2_updated),
+    }
+
+
 @app.post("/api/import/execute")
 def execute_import(
     table_name: str = Form(...),
@@ -2073,8 +2202,8 @@ def execute_import(
     file: UploadFile = File(...),
 ) -> Dict[str, str | int]:
     duplicate_mode = str(duplicate_mode or "fail").strip().lower()
-    if duplicate_mode not in {"fail", "continue"}:
-        raise HTTPException(status_code=400, detail="duplicate_mode must be fail or continue")
+    if duplicate_mode not in {"fail", "continue", "update"}:
+        raise HTTPException(status_code=400, detail="duplicate_mode must be fail or continue or update")
 
     table_name = table_name.strip()
     if table_name not in ALLOWED_TABLES:
@@ -2118,6 +2247,8 @@ def execute_import(
         source_field = mapping.get(col, "")
         if isinstance(source_field, str) and source_field.startswith("__LOGIC_"):
             mapped_df[col] = ""
+        elif isinstance(source_field, str) and source_field.startswith("__FIXED__:"):
+            mapped_df[col] = source_field.replace("__FIXED__:", "", 1)
         elif source_field in source_df.columns:
             mapped_df[col] = source_df[source_field].astype(str)
         else:
@@ -2130,20 +2261,16 @@ def execute_import(
 
     key_fields = get_duplicate_check_fields(table_name)
     collapsed_duplicate_rows = 0
-    if table_name == "bw_object_name" and duplicate_mode == "continue":
+    if table_name == "bw_object_name":
+        # bw_object_name import always follows update/insert semantics.
+        mapped_df, collapsed_duplicate_rows = collapse_duplicate_rows_by_keys(mapped_df, table_name, key_fields)
+    elif duplicate_mode in {"continue", "update"}:
         mapped_df, collapsed_duplicate_rows = collapse_duplicate_rows_by_keys(mapped_df, table_name, key_fields)
     else:
         check_duplicates_by_mapped_columns(source_df, mapped_df, mapping, table_name, key_fields)
 
     # Normalize empty-like values to SQL NULL and trim text safely.
     mapped_df = mapped_df.apply(lambda col: col.map(normalize_cell))
-
-    # Compatibility guard: mixed deployed schemas may still keep these columns as NOT NULL.
-    # Business rule allows them to be empty, so serialize empty-like values as empty string.
-    if table_name == "bw_object_name":
-        for nullable_col in ("SOURCESYS", "OBJECT_NAME"):
-            if nullable_col in mapped_df.columns:
-                mapped_df[nullable_col] = mapped_df[nullable_col].fillna("")
 
     for col in db_columns:
         max_len = col_lens.get(col)
@@ -2183,6 +2310,8 @@ def execute_import(
     cur = conn.cursor()
     inserted_count = 0
     updated_count = 0
+    bw_object_sync_inserted = 0
+    bw_object_sync_updated = 0
     try:
         row_dicts = [dict(zip(db_columns, row)) for row in rows]
         key_tuples = [tuple(row_dict[k] for k in key_fields) for row_dict in row_dicts]
@@ -2226,6 +2355,11 @@ def execute_import(
             cur.executemany(insert_sql, insert_rows)
             inserted_count = len(insert_rows)
 
+        if table_name == "rstran":
+            sync_stats = sync_bw_object_name_from_rstran(cur)
+            bw_object_sync_inserted = int(sync_stats.get("inserted", 0))
+            bw_object_sync_updated = int(sync_stats.get("updated", 0))
+
         cur.execute(f"SELECT COUNT(*) FROM `{table_name}`")
         db_count = int(cur.fetchone()[0])
 
@@ -2259,6 +2393,8 @@ def execute_import(
         "collapsed_duplicate_rows": int(collapsed_duplicate_rows),
         "excel_count": int(excel_count),
         "db_count": int(db_count),
+        "bw_object_sync_inserted": int(bw_object_sync_inserted),
+        "bw_object_sync_updated": int(bw_object_sync_updated),
         "last_update": status["last_update"],
         "last_count": status["last_count"],
         "message": "Import completed",
