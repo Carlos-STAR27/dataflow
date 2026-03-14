@@ -184,14 +184,21 @@ body:not(.flow-only) .layout.centered {
   gap: 6px;
 }
 
-.import-tool-number {
-  width: 88px;
+.import-tool-select {
+  width: 72px;
   height: 38px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.26);
   background: rgba(255, 255, 255, 0.12);
   color: var(--text-main);
   padding: 0 8px;
+}
+
+.import-tool-detected {
+  color: #77f3a9;
+  font-size: 16px;
+  line-height: 1;
+  font-weight: 700;
 }
 
 .create-user-tools label {
@@ -941,7 +948,7 @@ body[data-dropdown-mode="push"] .dropdown {
 .app-toast-actions {
   position: absolute;
   right: 10px;
-  top: 8px;
+  top: 4px;
   display: flex;
   gap: 8px;
 }
@@ -951,9 +958,11 @@ body[data-dropdown-mode="push"] .dropdown {
   background: rgba(255, 255, 255, 0.14);
   color: #f1f7ff;
   border-radius: 999px;
-  height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
+  height: 17px;
+  min-height: 17px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 1;
   cursor: pointer;
 }
 

@@ -86,7 +86,8 @@
   const importFileInput = document.getElementById("importFileInput");
   const importSheetSelect = document.getElementById("importSheetSelect");
   const importHeaderRowWrap = document.getElementById("importHeaderRowWrap");
-  const importHeaderRowInput = document.getElementById("importHeaderRowInput");
+  const importHeaderRowSelect = document.getElementById("importHeaderRowSelect");
+  const importHeaderRowDetectedMark = document.getElementById("importHeaderRowDetectedMark");
   const importMeta = document.getElementById("importMeta");
   const importProgressWrap = document.getElementById("importProgressWrap");
   const importProgressText = document.getElementById("importProgressText");
@@ -165,6 +166,7 @@
   let importTaskLock = false;
   let lastToastMessage = "";
   let activeHeaderRowNumber = 1;
+  let activeDetectedHeaderRow = 1;
 
   async function apiFetch(url, options = {}, skipAuthGuard = false) {
     const opts = options || {};
@@ -482,7 +484,7 @@
     if (importModalShell) {
       importModalShell.classList.toggle("is-busy", isBusy);
     }
-    [importFileInput, importSheetSelect, importHeaderRowInput, autoMapBtn, clearAllTableDataBtn, confirmImportBtn].forEach((el) => {
+    [importFileInput, importSheetSelect, importHeaderRowSelect, autoMapBtn, clearAllTableDataBtn, confirmImportBtn].forEach((el) => {
       if (!el) return;
       el.disabled = isBusy;
     });
@@ -1474,7 +1476,7 @@
         if (!lastToastMessage) return;
         try {
           await navigator.clipboard.writeText(lastToastMessage);
-          appToastCopyBtn.textContent = "已复制✅";
+          appToastCopyBtn.textContent = "已复制√";
         } catch {
           appToastCopyBtn.textContent = "复制失败";
         }
@@ -2003,9 +2005,16 @@
   }
 
   function getHeaderRowNumber() {
-    const parsed = Number.parseInt(String(importHeaderRowInput?.value || "1"), 10);
+    const parsed = Number.parseInt(String(importHeaderRowSelect?.value || "1"), 10);
     if (!Number.isFinite(parsed) || parsed < 1) return 1;
-    return Math.min(parsed, 999);
+    return Math.min(parsed, 10);
+  }
+
+  function updateHeaderRowDetectedIndicator() {
+    if (!importHeaderRowDetectedMark) return;
+    const isDetected = getHeaderRowNumber() === activeDetectedHeaderRow;
+    importHeaderRowDetectedMark.classList.toggle("hidden", !isDetected);
+    importHeaderRowDetectedMark.setAttribute("title", `自动识别标题行为第${activeDetectedHeaderRow}行`);
   }
 
   function extractHeadersAndRowCount(rows, headerRowNumber = 1) {
@@ -2023,6 +2032,28 @@
     return { headers, rowCount };
   }
 
+  function autoDetectHeaderRow(rows, tableName) {
+    const list = Array.isArray(rows) ? rows : [];
+    const dbFields = getVisibleDbFields(tableName);
+    const maxRows = Math.min(10, list.length || 0);
+    let bestRow = 1;
+    let bestScore = -1;
+
+    for (let index = 0; index < maxRows; index += 1) {
+      const row = Array.isArray(list[index]) ? list[index] : [];
+      const headers = row.map((cell) => String(cell || "").trim()).filter(Boolean);
+      if (!headers.length) continue;
+      const mappedCount = Object.keys(suggestMapping(dbFields, headers)).length;
+      const score = mappedCount * 10 + Math.min(headers.length, 9);
+      if (score > bestScore) {
+        bestScore = score;
+        bestRow = index + 1;
+      }
+    }
+
+    return bestRow;
+  }
+
   async function parseExcelHeaders(file, headerRowNumber = 1) {
     const fileName = file.name.toLowerCase();
     if (fileName.endsWith(".csv")) {
@@ -2030,40 +2061,48 @@
       const lines = text.split(/\r?\n/);
       const rows = lines.filter((line) => line.trim()).map((line) => line.split(","));
       if (!rows.length) {
-        return { headers: [], rowCount: 0 };
+        return { headers: [], rowCount: 0, detectedHeaderRow: 1 };
       }
-      return extractHeadersAndRowCount(rows, headerRowNumber);
+      const detectedHeaderRow = autoDetectHeaderRow(rows, activeImportTable);
+      const parsed = extractHeadersAndRowCount(rows, headerRowNumber);
+      return { ...parsed, detectedHeaderRow };
     }
 
     if (!window.XLSX) {
       window.alert("当前环境未加载 Excel 解析库，请联网后重试或使用 CSV 文件。");
-      return { headers: [], rowCount: 0 };
+      return { headers: [], rowCount: 0, detectedHeaderRow: 1 };
     }
 
     const buffer = await file.arrayBuffer();
     const workbook = window.XLSX.read(buffer, { type: "array" });
     const firstSheet = workbook.SheetNames[0];
-    if (!firstSheet) return { headers: [], rowCount: 0 };
+    if (!firstSheet) return { headers: [], rowCount: 0, detectedHeaderRow: 1 };
     const sheet = workbook.Sheets[firstSheet];
     const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
-    return extractHeadersAndRowCount(rows, headerRowNumber);
+    const detectedHeaderRow = autoDetectHeaderRow(rows, activeImportTable);
+    const parsed = extractHeadersAndRowCount(rows, headerRowNumber);
+    return { ...parsed, detectedHeaderRow };
   }
 
   function getHeadersFromSheet(workbook, sheetName, headerRowNumber = 1) {
-    if (!workbook || !sheetName) return { headers: [], rowCount: 0 };
+    if (!workbook || !sheetName) return { headers: [], rowCount: 0, detectedHeaderRow: 1 };
     const sheet = workbook.Sheets[sheetName];
-    if (!sheet) return { headers: [], rowCount: 0 };
+    if (!sheet) return { headers: [], rowCount: 0, detectedHeaderRow: 1 };
     const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
-    return extractHeadersAndRowCount(rows, headerRowNumber);
+    const detectedHeaderRow = autoDetectHeaderRow(rows, activeImportTable);
+    const parsed = extractHeadersAndRowCount(rows, headerRowNumber);
+    return { ...parsed, detectedHeaderRow };
   }
 
-  function renderMappingByHeaders(headers, rowCount = 0) {
+  function renderMappingByHeaders(headers, rowCount = 0, detectedHeaderRow = 1) {
     const dbFields = getVisibleDbFields(activeImportTable);
     const suggested = suggestMapping(dbFields, headers);
 
     activeExcelHeaders = headers;
     activeImportDataRowCount = Math.max(0, Number(rowCount) || 0);
     activeHeaderRowNumber = getHeaderRowNumber();
+    activeDetectedHeaderRow = Math.max(1, Number(detectedHeaderRow) || 1);
+    updateHeaderRowDetectedIndicator();
     if (!headers.length) {
       importMeta.innerHTML = "";
       importMapBody.innerHTML = "";
@@ -2079,18 +2118,17 @@
     activeExcelHeaders = [];
     activeImportDataRowCount = 0;
     activeHeaderRowNumber = 1;
+    activeDetectedHeaderRow = 1;
     importTaskLock = false;
     resetImportProgress();
     importModalTitle.textContent = `字段映射 - ${tableName}`;
     importMeta.innerHTML = "";
     importFileInput.value = "";
-    if (importHeaderRowInput) {
-      importHeaderRowInput.value = "1";
-      importHeaderRowInput.disabled = tableName !== "bw_object_name";
+    if (importHeaderRowSelect) {
+      importHeaderRowSelect.value = "1";
+      importHeaderRowSelect.disabled = false;
     }
-    if (importHeaderRowWrap) {
-      importHeaderRowWrap.classList.toggle("hidden", tableName !== "bw_object_name");
-    }
+    updateHeaderRowDetectedIndicator();
     if (importSheetSelect) {
       importSheetSelect.innerHTML = '<option value="">Sheet页</option>';
       importSheetSelect.disabled = true;
@@ -2156,7 +2194,10 @@
           importSheetSelect.disabled = true;
         }
         const parsed = await parseExcelHeaders(file, getHeaderRowNumber());
-        renderMappingByHeaders(parsed.headers, parsed.rowCount);
+        if (importHeaderRowSelect) {
+          importHeaderRowSelect.value = String(parsed.detectedHeaderRow);
+        }
+        renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
         return;
       }
 
@@ -2179,7 +2220,10 @@
 
       const firstSheet = sheets[0] || "";
       const parsed = getHeadersFromSheet(workbook, firstSheet, getHeaderRowNumber());
-      renderMappingByHeaders(parsed.headers, parsed.rowCount);
+      if (importHeaderRowSelect) {
+        importHeaderRowSelect.value = String(parsed.detectedHeaderRow);
+      }
+      renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
     });
 
     if (importSheetSelect) {
@@ -2187,27 +2231,30 @@
         if (!activeImportWorkbook) return;
         const sheetName = importSheetSelect.value;
         const parsed = getHeadersFromSheet(activeImportWorkbook, sheetName, getHeaderRowNumber());
-        renderMappingByHeaders(parsed.headers, parsed.rowCount);
+        if (importHeaderRowSelect) {
+          importHeaderRowSelect.value = String(parsed.detectedHeaderRow);
+        }
+        renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
       });
     }
 
-    if (importHeaderRowInput) {
-      importHeaderRowInput.addEventListener("change", async () => {
-        importHeaderRowInput.value = String(getHeaderRowNumber());
+    if (importHeaderRowSelect) {
+      importHeaderRowSelect.addEventListener("change", async () => {
+        importHeaderRowSelect.value = String(getHeaderRowNumber());
         const file = importFileInput?.files && importFileInput.files[0];
         if (!file || !activeImportTable) return;
 
         const fileNameLower = file.name.toLowerCase();
         if (fileNameLower.endsWith(".csv")) {
           const parsed = await parseExcelHeaders(file, getHeaderRowNumber());
-          renderMappingByHeaders(parsed.headers, parsed.rowCount);
+          renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
           return;
         }
 
         if (!activeImportWorkbook || !importSheetSelect) return;
         const sheetName = importSheetSelect.value;
         const parsed = getHeadersFromSheet(activeImportWorkbook, sheetName, getHeaderRowNumber());
-        renderMappingByHeaders(parsed.headers, parsed.rowCount);
+        renderMappingByHeaders(parsed.headers, parsed.rowCount, parsed.detectedHeaderRow);
       });
     }
 

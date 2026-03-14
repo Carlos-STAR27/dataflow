@@ -143,9 +143,21 @@
         <select id="importSheetSelect" title="选择Sheet" disabled>
           <option value="">Sheet页</option>
         </select>
-        <label id="importHeaderRowWrap" class="import-tool-inline hidden" for="importHeaderRowInput">
-          <span class="import-tool-label">标题行数</span>
-          <input id="importHeaderRowInput" class="import-tool-number" type="number" min="1" step="1" value="1" inputmode="numeric" />
+        <label id="importHeaderRowWrap" class="import-tool-inline" for="importHeaderRowSelect">
+          <span class="import-tool-label">标题行</span>
+          <select id="importHeaderRowSelect" class="import-tool-select" title="选择标题行">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+          </select>
+          <span id="importHeaderRowDetectedMark" class="import-tool-detected hidden" aria-hidden="true">√</span>
         </label>
         <button id="autoMapBtn" class="glass-btn" type="button">自动映射</button>
       </div>
