@@ -43,9 +43,5 @@ while True:
         time.sleep(2)
 PY
 
-echo "[entrypoint] Ensuring tables..."
-python /app/scripts/create_rstran_table.py
-python /app/scripts/create_bw_object_name_table.py
-
 echo "[entrypoint] Starting API on :8000"
-exec uvicorn backend.import_status_api:app --host 0.0.0.0 --port 8000
+exec uvicorn import_status_api:app --host 0.0.0.0 --port 8000

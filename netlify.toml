@@ -1,0 +1,14 @@
+[build]
+  base = "frontend-prototype"
+  publish = "."
+  command = "echo 'window.__DATAFLOW_API_BASE__ = "'$NEXT_PUBLIC_API_URL'"; window.__DATAFLOW_APP_VERSION__ = "1.0.1";' > runtime-config.js"
+
+[build.environment]
+  NEXT_PUBLIC_API_URL = ""
+
+[headers]
+  for = "/*"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, POST, PUT, DELETE, OPTIONS"
+    Access-Control-Allow-Headers = "Content-Type, Authorization"
